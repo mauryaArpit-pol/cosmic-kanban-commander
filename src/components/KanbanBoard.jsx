@@ -1,48 +1,18 @@
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { DndContext, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { Button } from "@/components/ui/button";
 import { Plus } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import TaskColumn from "./TaskColumn";
 import TaskFormDialog from "./TaskFormDialog";
-import { generateId } from "@/lib/utils";
-
-// Initialize with some sample tasks
-const initialTasks = [
-  {
-    id: generateId(),
-    title: "Research project requirements",
-    description: "Gather all necessary information for the upcoming project",
-    status: "todo",
-    priority: "high",
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  },
-  {
-    id: generateId(),
-    title: "Design user interface mockups",
-    description: "Create wireframes for the main dashboard",
-    status: "inprogress",
-    priority: "medium",
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  },
-  {
-    id: generateId(),
-    title: "Update documentation",
-    description: "Update the API documentation with new endpoints",
-    status: "done",
-    priority: "low",
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  },
-];
+import { TaskAPI } from "../backend/api";
 
 const KanbanBoard = () => {
-  const [tasks, setTasks] = useState(initialTasks);
+  const [tasks, setTasks] = useState([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingTask, setEditingTask] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
   
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -52,13 +22,34 @@ const KanbanBoard = () => {
     })
   );
 
+  // Load tasks when component mounts
+  useEffect(() => {
+    const fetchTasks = async () => {
+      try {
+        const fetchedTasks = await TaskAPI.getAllTasks();
+        setTasks(fetchedTasks);
+        setIsLoading(false);
+      } catch (error) {
+        console.error("Failed to fetch tasks:", error);
+        toast({
+          title: "Error",
+          description: "Failed to load tasks. Please try again.",
+          variant: "destructive",
+        });
+        setIsLoading(false);
+      }
+    };
+    
+    fetchTasks();
+  }, []);
+
   // Filter tasks by their status
   const todoTasks = tasks.filter(task => task.status === "todo");
   const inProgressTasks = tasks.filter(task => task.status === "inprogress");
   const doneTasks = tasks.filter(task => task.status === "done");
 
   // Handle drag end for moving tasks between columns
-  const handleDragEnd = (event) => {
+  const handleDragEnd = async (event) => {
     const { active, over } = event;
     
     if (!over) return;
@@ -70,19 +61,37 @@ const KanbanBoard = () => {
       return;
     }
     
-    setTasks(currentTasks => 
-      currentTasks.map(task => 
-        task.id === taskId 
-          ? { ...task, status: newStatus, updatedAt: new Date() } 
-          : task
-      )
-    );
-    
-    toast({
-      title: "Task updated",
-      description: "Task moved successfully!",
-      duration: 3000,
-    });
+    try {
+      // Optimistically update UI
+      setTasks(currentTasks => 
+        currentTasks.map(task => 
+          task.id === taskId 
+            ? { ...task, status: newStatus, updatedAt: new Date() } 
+            : task
+        )
+      );
+      
+      // Update in backend
+      await TaskAPI.updateTaskStatus(taskId, newStatus);
+      
+      toast({
+        title: "Task updated",
+        description: "Task moved successfully!",
+        duration: 3000,
+      });
+    } catch (error) {
+      console.error("Failed to update task status:", error);
+      
+      // Revert optimistic update on failure
+      const originalTasks = await TaskAPI.getAllTasks();
+      setTasks(originalTasks);
+      
+      toast({
+        title: "Error",
+        description: "Failed to update task. Please try again.",
+        variant: "destructive",
+      });
+    }
   };
 
   // Open dialog to add a new task
@@ -98,54 +107,80 @@ const KanbanBoard = () => {
   };
 
   // Handle task save (create or update)
-  const handleSaveTask = (taskData) => {
-    if (editingTask) {
-      // Update existing task
-      setTasks(currentTasks => 
-        currentTasks.map(task => 
-          task.id === editingTask.id 
-            ? { ...task, ...taskData, updatedAt: new Date() } 
-            : task
-        )
-      );
-      toast({
-        title: "Task updated",
-        description: "Your task has been updated successfully!",
-        duration: 3000,
-      });
-    } else {
-      // Create new task
-      const newTask = {
-        id: generateId(),
-        title: taskData.title || "",
-        description: taskData.description || "",
-        status: taskData.status || "todo",
-        priority: taskData.priority || "medium",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
+  const handleSaveTask = async (taskData) => {
+    try {
+      if (editingTask) {
+        // Update existing task
+        const updatedTask = await TaskAPI.updateTask(editingTask.id, taskData);
+        
+        setTasks(currentTasks => 
+          currentTasks.map(task => 
+            task.id === editingTask.id ? updatedTask : task
+          )
+        );
+        
+        toast({
+          title: "Task updated",
+          description: "Your task has been updated successfully!",
+          duration: 3000,
+        });
+      } else {
+        // Create new task
+        const newTask = await TaskAPI.createTask(taskData);
+        
+        setTasks(currentTasks => [...currentTasks, newTask]);
+        
+        toast({
+          title: "Task created",
+          description: "Your new task has been created! ✨",
+          duration: 3000,
+        });
+      }
       
-      setTasks(currentTasks => [...currentTasks, newTask]);
+      setIsDialogOpen(false);
+    } catch (error) {
+      console.error("Failed to save task:", error);
       toast({
-        title: "Task created",
-        description: "Your new task has been created! ✨",
-        duration: 3000,
+        title: "Error",
+        description: "Failed to save task. Please try again.",
+        variant: "destructive",
       });
     }
-    
-    setIsDialogOpen(false);
   };
 
   // Delete a task
-  const handleDeleteTask = (taskId) => {
-    setTasks(currentTasks => currentTasks.filter(task => task.id !== taskId));
-    toast({
-      title: "Task deleted",
-      description: "The task has been removed.",
-      variant: "destructive",
-      duration: 3000,
-    });
+  const handleDeleteTask = async (taskId) => {
+    try {
+      // Optimistically update UI
+      setTasks(currentTasks => currentTasks.filter(task => task.id !== taskId));
+      
+      // Delete in backend
+      await TaskAPI.deleteTask(taskId);
+      
+      toast({
+        title: "Task deleted",
+        description: "The task has been removed.",
+        variant: "destructive",
+        duration: 3000,
+      });
+    } catch (error) {
+      console.error("Failed to delete task:", error);
+      
+      // Revert optimistic update on failure
+      const originalTasks = await TaskAPI.getAllTasks();
+      setTasks(originalTasks);
+      
+      toast({
+        title: "Error",
+        description: "Failed to delete task. Please try again.",
+        variant: "destructive",
+      });
+    }
   };
+
+  if (isLoading) {
+    return <div className="flex justify-center items-center h-full">Loading tasks...</div>;
+  }
 
   return (
     <div className="flex flex-col h-full">
